@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
+from setuptools import setup
 
 setup(name='python-bitcoinrpc',
       version='0.1',
@@ -12,4 +12,5 @@ setup(name='python-bitcoinrpc',
       maintainer_email='<jgarzik@exmulti.com>',
       url='http://www.github.com/jgarzik/python-bitcoinrpc',
       packages=['bitcoinrpc'],
+      install_requires=['urllib3'],
       classifiers=['License :: OSI Approved :: GNU Library or Lesser General Public License (LGPL)', 'Operating System :: OS Independent'])

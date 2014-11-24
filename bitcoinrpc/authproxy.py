@@ -34,14 +34,14 @@
   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 """
 
-try:
-    import http.client as httplib
-except ImportError:
-    import httplib
 import base64
 import decimal
 import json
 import logging
+import urllib3
+from urllib3.util.timeout import Timeout
+from urllib3.util.request import make_headers
+
 try:
     import urllib.parse as urlparse
 except ImportError:
@@ -71,32 +71,11 @@ class AuthServiceProxy(object):
         self.__service_url = service_url
         self.__service_name = service_name
         self.__url = urlparse.urlparse(service_url)
-        if self.__url.port is None:
-            port = 80
-        else:
-            port = self.__url.port
-        (user, passwd) = (self.__url.username, self.__url.password)
-        try:
-            user = user.encode('utf8')
-        except AttributeError:
-            pass
-        try:
-            passwd = passwd.encode('utf8')
-        except AttributeError:
-            pass
-        authpair = user + b':' + passwd
-        self.__auth_header = b'Basic ' + base64.b64encode(authpair)
+        self.__auth = '%s:%s' % (self.__url.username, self.__url.password)
+        self.__headers = make_headers(keep_alive=True, user_agent=USER_AGENT, basic_auth=self.__auth)
+        self.__headers.update({'Content-Type:': 'application/json'})
 
-        if connection:
-            # Callables re-use the connection of the original proxy
-            self.__conn = connection
-        elif self.__url.scheme == 'https':
-            self.__conn = httplib.HTTPSConnection(self.__url.hostname, port,
-                                                  None, None, False,
-                                                  timeout)
-        else:
-            self.__conn = httplib.HTTPConnection(self.__url.hostname, port,
-                                                 False, timeout)
+        self.__conn = urllib3.PoolManager(retries=False, timeout=Timeout(timeout))
 
     def __getattr__(self, name):
         if name.startswith('__') and name.endswith('__'):
@@ -115,13 +94,9 @@ class AuthServiceProxy(object):
                                'method': self.__service_name,
                                'params': args,
                                'id': AuthServiceProxy.__id_count}, default=EncodeDecimal)
-        self.__conn.request('POST', self.__url.path, postdata,
-                            {'Host': self.__url.hostname,
-                             'User-Agent': USER_AGENT,
-                             'Authorization': self.__auth_header,
-                             'Content-type': 'application/json'})
+        http_response = self.__conn.urlopen('POST', self.__service_url, body=postdata, headers=self.__headers)
 
-        response = self._get_response()
+        response = self._parse_response(http_response)
         if response['error'] is not None:
             raise JSONRPCException(response['error'])
         elif 'result' not in response:
@@ -143,13 +118,11 @@ class AuthServiceProxy(object):
 
         postdata = json.dumps(batch_data, default=EncodeDecimal)
         log.debug("--> "+postdata)
-        self.__conn.request('POST', self.__url.path, postdata,
-                            {'Host': self.__url.hostname,
-                             'User-Agent': USER_AGENT,
-                             'Authorization': self.__auth_header,
-                             'Content-type': 'application/json'})
+        http_response = self.__conn.urlopen('POST', self.__service_url, body=postdata, headers=self.__headers)
+
         results = []
-        responses = self._get_response()
+        responses = self._parse_response(http_response)
+
         for response in responses:
             if response['error'] is not None:
                 raise JSONRPCException(response['error'])
@@ -160,16 +133,15 @@ class AuthServiceProxy(object):
                 results.append(response['result'])
         return results
 
-    def _get_response(self):
-        http_response = self.__conn.getresponse()
-        if http_response is None:
+    def _parse_response(self, http_response):
+        if not http_response.data:
             raise JSONRPCException({
                 'code': -342, 'message': 'missing HTTP response from server'})
 
-        responsedata = http_response.read().decode('utf8')
-        response = json.loads(responsedata, parse_float=decimal.Decimal)
+        response = json.loads(http_response.data, parse_float=decimal.Decimal)
         if "error" in response and response["error"] is None:
             log.debug("<-%s- %s"%(response["id"], json.dumps(response["result"], default=EncodeDecimal)))
         else:
-            log.debug("<-- "+responsedata)
+            log.debug("<-- "+http_response.data)
         return response
+
